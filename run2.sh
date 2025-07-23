@@ -1,50 +1,67 @@
 #!/bin/bash
-
 set -e
 
-echo "📦 Removing existing (incompatible) gsad..."
-sudo rm -f /usr/local/sbin/gsad /usr/sbin/gsad
+echo "🚀 Updating package lists and installing build dependencies..."
+sudo apt update
+sudo apt install -y \
+  cmake build-essential pkg-config \
+  libglib2.0-dev libgnutls28-dev libgnutls-openssl27 \
+  libmicrohttpd-dev libxml2-dev libpcap-dev libssh-dev \
+  libksba8 libksba-dev libgpgme-dev libgnutls28-dev \
+  libjson-glib-dev libhiredis-dev libsnmp-dev \
+  uuid-dev redis-server python3-paramiko python3-lxml \
+  python3-defusedxml python3-pip python3-psutil python3-setuptools \
+  python3-cffi python3-greenlet python3-openssl \
+  xml-twig-tools git
 
-echo "📁 Creating source directory..."
+echo "📁 Creating source directory at ~/gvm-source..."
 mkdir -p ~/gvm-source
 cd ~/gvm-source
 
-echo "🔁 Cloning gsad repository..."
-git clone https://github.com/greenbone/gsad.git
-cd gsad
+# Function to clone, checkout tag, build and install
+build_component() {
+  local repo_url=$1
+  local folder_name=$2
+  local tag=$3
 
-echo "🔍 Checking out latest tag for GVM 24.0..."
-git fetch --tags
-# Use a specific tag that aligns with GVM 24.0 (e.g., v24.0.0 or closest stable)
-LATEST_TAG=$(git tag -l | grep '^v24\.0' | sort -V | tail -n 1)
+  echo "🔁 Cloning $folder_name repository..."
+  if [ -d "$folder_name" ]; then
+    echo "⚠️ Directory $folder_name exists. Removing it first..."
+    rm -rf "$folder_name"
+  fi
+  git clone "$repo_url"
+  cd "$folder_name"
+  git fetch --tags
+  echo "🔍 Checking out tag $tag..."
+  git checkout "tags/$tag" -b build-$tag
+  mkdir -p build && cd build
+  echo "🔧 Building $folder_name..."
+  cmake ..
+  make -j$(nproc)
+  echo "📥 Installing $folder_name..."
+  sudo make install
+  cd ../../
+}
 
-if [ -z "$LATEST_TAG" ]; then
-    echo "❌ Could not find a suitable tag for GVM 24.0"
-    exit 1
-fi
+# Build gvmd
+build_component https://github.com/greenbone/gvmd.git gvmd v24.0.0
 
-echo "✅ Found tag: $LATEST_TAG"
-git checkout tags/$LATEST_TAG -b build-24.0
+# Build gsad
+build_component https://github.com/greenbone/gsad.git gsad v24.0.0
 
-echo "🔧 Building gsad from source..."
-mkdir -p build
-cd build
-cmake ..
-make -j$(nproc)
+# Build ospd-openvas (the scanner daemon wrapper)
+build_component https://github.com/greenbone/ospd-openvas.git ospd-openvas v24.0.0
 
-echo "📥 Installing gsad..."
-sudo make install
+echo "✅ All components built and installed successfully."
 
-echo "✅ gsad $LATEST_TAG installed successfully."
+echo "🔄 Setting up Redis for GVM..."
+sudo systemctl enable redis-server
+sudo systemctl restart redis-server
 
 echo "🔄 Restarting GVM services..."
-sudo systemctl restart gvmd
-sudo systemctl restart ospd-openvas
-sudo systemctl restart gsad
+sudo systemctl daemon-reload
+sudo systemctl restart gvmd || true
+sudo systemctl restart ospd-openvas || true
+sudo systemctl restart gsad || true
 
-sleep 3
-
-echo "🔎 Checking gsad status..."
-sudo systemctl status gsad --no-pager
-
-echo "🌐 If no errors above, access the Web UI at: https://127.0.0.1:9392"
+echo "🌐 Installation complete! Access the web UI at: https://127.0.0.1:9392"
